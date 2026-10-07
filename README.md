@@ -1,62 +1,105 @@
-# Network Troubleshooting Lab: Intermittent Packet Loss Between Two Sites
+# Network Troubleshooting Lab: Two Routing Faults, Two Learning Stages
 
-> **Status: In progress.** I'm documenting each step as I go. The full investigation, including wrong turns, is in [log.md](log.md).
+I used Cisco Packet Tracer to investigate two routing faults between simulated sites: an incorrect static route that caused intermittent packet loss, and a missing return route that prevented connectivity when I changed the ping source.
 
-## The problem
+This project also records how I learned. **V1 was a difficult first attempt with substantial AI support. V2 was an independent repeat investigation, using the OSI model to structure my reasoning.**
 
-Two offices are connected through a service provider network. All the links are up, but when Site B pings Site A, only some of the packets get through. The goal is to find out why, fix it, and verify the fix.
+## V1 — Learning the foundations with AI support
 
-I don't come from a networking background. I chose this lab because the fault was built by someone else, so I didn't know the answer going in.
+When I started, I did not have the networking foundations needed to troubleshoot this lab independently. IP addressing, subnet masks, next hops, routing tables, ARP and even the meaning of ping output were unfamiliar or difficult for me to connect together.
 
-## Lab file
+That made the first investigation particularly challenging. I was learning the basic concepts at the same time as trying to understand the fault.
 
-The broken network is a Cisco Packet Tracer file created by **SnehaSugilal**, recreated from a scenario by **PM Networking**. Download it from the original repository:
+I relied heavily on Claude throughout V1. It helped me interpret command output, understand unfamiliar concepts, develop possible explanations and decide what to test next. I often needed explanations broken down into smaller steps before I could understand why a packet would succeed or fail.
 
-[SnehaSugilal/Troubleshooting_Scenario_60-Packet-Loss](https://github.com/SnehaSugilal/Troubleshooting_Scenario_60-Packet-Loss)
+I operated Packet Tracer and ran the commands myself, but the reasoning process was substantially AI-assisted. I do not present V1 as an independently solved troubleshooting exercise. Its value was building enough understanding to explain the results and revisit the problem myself.
 
-If you want to try it yourself, don't open the solution section in that README.
+The [V1 investigation log](log-v1.md) records the tests, reported results, interpretations and fixes.
 
-I haven't included the `.pkt` file here because the original repository has no license. All credit for the lab design goes to its authors.
+## V2 — Repeating the investigation independently
 
-## Topology
+After completing V1, I worked through the troubleshooting again on my own, without AI guiding the troubleshooting steps. This time, I used the OSI model to organise my investigation and explain why each check mattered.
 
-```
-[Site A]  ---  R1  ========  MPLS  ========  R2  ---  [Site B]
-10.1.1.0/24      1.1.1.1   1.1.1.2  2.2.2.2   2.2.2.1      20.1.1.0/24
-```
+I already knew the faults from the first attempt. The purpose of V2 was to check whether I could apply what I had learned independently and explain the packet's journey, including its return path.
 
-- Three Cisco 2901 routers: **R1** (Site A), **MPLS** (the service provider), **R2** (Site B)
-- R1 and R2 are not directly connected. All traffic passes through MPLS.
+| Focus | How it structured my thinking |
+|---|---|
+| **Layer 1 — Physical** | Start with the devices, links and interface state. An operational link is a baseline, not proof of end-to-end connectivity. |
+| **Layer 2 — Data link** | Consider how a router reaches the selected next hop on an Ethernet link, including the role of ARP. Distinguish a possible neighbour-resolution issue from an incorrect route. |
+| **Layer 3 — Network** | Identify the source and destination, check addresses and subnet masks, and follow route selection at each hop for both the request and the reply. |
+| **Layers 4–7 — Transport through application** | Recognise the limits of the test. An ICMP ping does not establish that a TCP/UDP service or application works. |
 
-## How I'm approaching it
+Using OSI helped me narrow the investigation. Both confirmed faults were at Layer 3; I did not need to force an unrelated test into every layer.
 
-1. **Write a prediction before every test**, so I can compare what I expected with what actually happened.
-2. **Reproduce the problem** before trying to explain it.
-3. **Look at the raw data**, not just the summary number.
-4. **Follow the packet hop by hop** (R2 → MPLS → R1 and back), checking each router's routing table.
-5. **Change one thing at a time**, then test again.
-6. **Verify the fix**, and check that nothing else broke.
+The [V2 independent review log](log-v2.md) explains this reasoning in more detail. It distinguishes known V1 results from replay expectations and identifies second-run outputs that still need to be attached.
 
-## Progress so far
+## Lab setup
 
-| Step | What I did | What I learned |
+| Device | Simulated internal endpoint | Provider-facing connection |
 |---|---|---|
-| 1 | Observed the topology | All links were green, so the problem is probably not physical |
-| 2 | Pinged Site A from R2 four times | Success rates of 20%, 60%, 40%, 60% looked random, but the raw results formed one perfect alternating pattern: `!.!.!.!.!.` |
-| 3 | Formed a hypothesis | Something in the network may be alternating between a correct and a wrong path |
-| 4 | Checked R2's routing table | R2 has only one path to Site A (a default route to MPLS), so R2 is not the one alternating |
-| 5 | Check MPLS's routing table | *Next* |
+| R1 — Site A | `10.1.1.1`, representing `10.1.1.0/24` | R1 `1.1.1.1` connects to provider `1.1.1.2` |
+| R2 — Site B | `20.1.1.1`, representing `20.1.1.0/24` | R2 `2.2.2.1` connects to provider `2.2.2.2` |
 
-## Root cause, fix and verification
+R1 and R2 communicate through the middle provider router, labelled `MPLS`. This lab investigates **IP routing**, not MPLS label switching, LDP or VRFs. The internal endpoints are represented by router interface addresses; they are not separate user workstations.
 
-*To be added once I've found them.*
+## Findings and fixes
+
+### Fault 1 — Incorrect equal-cost route on R1
+
+A standard ping from R2 to `10.1.1.1` showed alternating replies and timeouts, represented by `!.!.!` (`!` = reply received; `.` = timeout).
+
+The source was R2's outgoing interface, `2.2.2.1`, so R1 needed a route back to that address. R1 had two equal-preference static routes to `2.2.2.0/24`:
+
+| Next hop | Finding |
+|---|---|
+| `1.1.1.2` | Valid provider-router address |
+| `1.1.1.100` | Incorrect next hop with no valid router at that address |
+
+In this Packet Tracer scenario, traffic distribution across those next hops explained the alternating loss. This does not mean equal-cost routing always alternates individual packets on real equipment.
+
+I removed the incorrect route in R1's global configuration mode:
+
+```text
+no ip route 2.2.2.0 255.255.255.0 1.1.1.100
+```
+
+The repeated standard ping then returned `!!!!!`.
+
+### Fault 2 — Missing Site B return route on the provider
+
+The successful standard ping did not test the return route to Site B's internal address. Using extended ping, I changed the source to `20.1.1.1` while keeping the destination as `10.1.1.1`. That test returned `.....` — 0% success.
+
+The provider had no matching route to `20.1.1.1`, including no usable default route. It could reach R2's connected WAN network, but could not forward replies to the simulated internal network.
+
+I added the following route in the provider's global configuration mode:
+
+```text
+ip route 20.1.1.0 255.255.255.0 2.2.2.1
+```
+
+The source-specific test succeeded after that correction.
+
+## Verification and scope
+
+| Test from the original investigation | Result after the relevant fix | What it demonstrated |
+|---|---|---|
+| Source `2.2.2.1`, destination `10.1.1.1` | Successful after removing the incorrect R1 route | ICMP reachability between R2's WAN address and the Site A endpoint |
+| Source `20.1.1.1`, destination `10.1.1.1` | Successful after adding the provider route | ICMP reachability between the simulated internal endpoints |
+
+These results support the two routing fixes. They do not validate actual workstation connectivity or application behaviour. The logs are retrospective records; representative output and expected results are labelled rather than presented as complete terminal captures.
 
 ## What I learned
 
-*To be added.*
+- **Define the test before interpreting it.** A ping's source address determines where its reply must return.
+- **Follow both directions.** Every router makes a routing decision for the current destination; a working forward path does not guarantee a working return path.
+- **Use observations to test hypotheses.** Alternating loss suggested multiple forwarding paths, but the routing findings and retest were needed to support that explanation.
+- **Use OSI to organise the questions.** Distinguishing link state, local delivery, routing and application behaviour made the investigation easier to explain.
+- **Check understanding through independent practice.** V1 gave me supported exposure to unfamiliar concepts. V2 helped me apply those concepts myself and identify the limits of what my tests proved.
 
-## How I used AI
+## Lab credit
 
-I used Claude as a tutor. It explained concepts in plain language (routing tables, ARP, how to read ping output) and suggested what to check next. I ran every command myself, wrote every prediction and hypothesis before seeing the result, and recorded what actually happened, including where my first reading was wrong.
+The original broken Packet Tracer topology was created by **SnehaSugilal**, based on a troubleshooting scenario by **PM Networking**:
 
-I also chose this lab over earlier project ideas the AI suggested, because those ideas didn't have a real unknown to investigate.
+[SnehaSugilal/Troubleshooting_Scenario_60-Packet-Loss](https://github.com/SnehaSugilal/Troubleshooting_Scenario_60-Packet-Loss)
+
+I used an existing broken lab so that I did not begin V1 knowing the fault. The `.pkt` file is not redistributed here. Credit for the original scenario and topology belongs to its creators; this repository documents my investigation and learning.
